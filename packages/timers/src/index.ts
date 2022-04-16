@@ -1,138 +1,89 @@
 import { createSignal, onCleanup, createEffect, untrack, Accessor } from "solid-js";
+import type { SignalOptions } from "solid-js/types/reactive/signal";
+
+export type PolledOptions<T> = SignalOptions<T> & { initial?: T };
 
 /**
- * {@link setInterval} which automatically clears when the reactive scope is disposed.
+ * Creates an self-cleaning {@link setInterval}/ {@link setTimeout} that runs a callback after a delay repeatedly or once.
  *
- * @param fn Function to be called every {@link delay}.
- * @param delay Number representing the time between executions of {@link fn} in ms.
- * @returns Function to manually clear the interval
+ * @param callback - Function that will be called after {@link delay} ms
+ * @param delay - Number representing the delay in ms
+ * @param scheduler - Function to schedule the timer with. Accepts
+ * setTimeout and setInterval, defaulting to setTimeout.
+ * @return Provides a manual clear function.
+ *
+ * @example
+ * ```ts
+ * let [count, setCount] = createSignal(0);
+ * setTimer(() => setCount(count() + 1), 500, setInterval);
+ * return <h1>Counting up: {count()}</h1>;
+ * ```
  */
-export const createBasicInterval = (fn: () => void, delay: number): (() => void) => {
-  const intervalId = setInterval(fn, delay);
-  const clear = () => clearInterval(intervalId);
+export const setTimer = (
+  callback: VoidFunction,
+  delay: number,
+  scheduler: typeof setTimeout | typeof setInterval = setTimeout
+): VoidFunction => {
+  const intervalId = scheduler(callback, delay);
+  const clear = () => clearInterval(intervalId as number);
   onCleanup(clear);
   return clear;
 };
 
 /**
- * {@link setTimeout} which automatically clears when the reactive scope is disposed.
+ * Creates an self-cleaning {@link setInterval}/ {@link setNewTimeout} that runs a callback after a delay repeatedly or once.
  *
- * @param fn Function to be called after {@link delay}.
- * @param delay Number representing the time before executing {@link fn} in ms.
- * @returns Function to manually clear the timeout
- */
-export const createBasicTimeout = (fn: () => void, delay: number): (() => void) => {
-  const timeoutId = setTimeout(fn, delay);
-  const clear = () => clearTimeout(timeoutId);
-  onCleanup(clear);
-  return clear;
-};
-
-/**
- * {@link setTimeout} with an optionally reactive delay. If it changes, the elapsed fraction
- * of the previous delay will be counted as elapsed for the new delay as well.
+ * @param callback - Function that will be called after {@link delay} ms
+ * @param delay - Accessor returning a `Number` representing a delay in ms, or `false` to pause the timer.
+ * @param scheduler - Optional function to schedule the timer with. Accepts
+ * {@link setNewTimeout} and {@link setInterval}, defaulting to setTimeout.
  *
- * @param fn Function to be called after {@link delay}.
- * @param delay Number representing the time before executing {@link fn} in ms.
+ * @example
+ * ```tsx
+ * let [enabled, setEnabled] = createSignal(false)
+ * let [speed, setSpeed] = createSignal(500)
+ * let [count, setCount] = createSignal(0);
+ * createTimer(() => setCount(p => ++p), () => enabled() && speed(), setInterval);
+ * <h1>Current count: {count()}</h1>
+ * ```
  */
-export const createTimeout = (fn: () => void, delay: number | Accessor<number>) => {
-  if (typeof delay === "number") {
-    createBasicTimeout(fn, delay);
-    return;
-  }
-
-  let done = false;
-  let fractionDone = 0;
-  let prev = performance.now();
-  const callHandlerAndSetDone = () => {
-    fn();
-    done = true;
-  };
-
-  createEffect((prevTimeout?: number) => {
-    if (done) return;
-    const currTimeout = delay();
-    if (prevTimeout) {
-      const curr = performance.now();
-      fractionDone += (curr - prev) / prevTimeout;
-      prev = curr;
-    }
-    createBasicTimeout(callHandlerAndSetDone, (1 - fractionDone) * currTimeout);
-    return currTimeout;
-  });
-};
-
-/**
- * {@link setInterval} with an optionally reactive delay. If it changes, the elapsed fraction
- * of the previous delay will be counted as elapsed for the first new delay as well.
- *
- * @param fn Function to be called every {@link delay}.
- * @param delay Number or {@link Accessor} containing a number representing
- * the time between executions of {@link fn} in ms.
- */
-export const createInterval = (fn: () => void, delay: number | Accessor<number>): void => {
-  if (typeof delay === "number") {
-    createBasicInterval(fn, delay);
-    return;
-  }
-
+export function createTimer(
+  callback: VoidFunction,
+  delay: Accessor<number | false>,
+  scheduler: typeof setTimeout | typeof setInterval = setTimeout
+): void {
   let prev = performance.now();
   let fractionDone = 0;
-  const [paused, setPaused] = createSignal(false);
+  let clear: VoidFunction | undefined;
+
   const callHandlerAndSetPrev = () => {
-    untrack(fn);
+    untrack(callback);
     prev = performance.now();
   };
 
   createEffect((prevDelay?: number) => {
-    if (paused()) {
-      createTimeout(
-        () => {
-          setPaused(false);
-          fractionDone = 0;
-          callHandlerAndSetPrev();
-        },
-        () => (1 - fractionDone) * delay()
-      );
-      return;
-    }
-
+    if (clear) clear(), (clear = undefined);
     const currDelay = delay();
+    if (currDelay === false) return;
+
     if (prevDelay) {
-      fractionDone = (performance.now() - prev) / prevDelay;
+      fractionDone = (performance.now() - prev) / currDelay;
       if (fractionDone < 1) {
-        setPaused(true);
+        setTimer(() => {
+          callHandlerAndSetPrev();
+          if (scheduler === setInterval) {
+            clear = setTimer(callHandlerAndSetPrev, currDelay, scheduler);
+          }
+        }, (1 - fractionDone) * currDelay);
         return;
-      } else {
-        callHandlerAndSetPrev();
       }
+      callHandlerAndSetPrev();
     }
 
-    createBasicInterval(callHandlerAndSetPrev, currDelay);
+    setTimer(callHandlerAndSetPrev, currDelay, scheduler);
     return currDelay;
   });
-};
-
-/**
- * Like {@link createInterval}, except the timeout only updates between executions.
- *
- * @param handler Function to be called every {@link timeout}
- * @param timeout Number or Function returning a number representing
- * the time between executions of {@link handler} in ms.
- */
-export const createTimeoutLoop = (handler: () => void, timeout: number | (() => number)): void => {
-  if (typeof timeout === "number") {
-    createBasicInterval(handler, timeout);
-    return;
-  }
-  const [currentTimeout, setCurrentTimeout] = createSignal(untrack(timeout));
-  createEffect(() =>
-    createBasicInterval(() => {
-      handler();
-      setCurrentTimeout(timeout);
-    }, currentTimeout())
-  );
-};
+}
 
 /**
  * Polls a function periodically. Returns an {@link Accessor} containing the latest polled value.
@@ -141,14 +92,30 @@ export const createTimeoutLoop = (handler: () => void, timeout: number | (() => 
  * the time between executions of {@link fn} in ms.
  * @returns An {@link Accessor} containing the latest polled value.
  */
-export const createPolled = <T>(
+export function createPolled<T>(
+  fn: (prev: T) => T,
+  timeout: Accessor<number | false> | number,
+  options: PolledOptions<T> & { initial: T }
+): Accessor<T>;
+export function createPolled<T>(
   fn: (prev?: T) => T,
-  timeout: Accessor<number> | number
-): Accessor<T> => {
-  const [polled, setPolled] = createSignal(untrack(() => fn()));
-  createInterval(() => setPolled(fn), timeout);
+  timeout: Accessor<number | false> | number,
+  options?: PolledOptions<T>
+): Accessor<T>;
+export function createPolled<T>(
+  fn: (prev?: T) => T,
+  timeout: Accessor<number | false> | number,
+  options: PolledOptions<T> = {}
+): Accessor<T> {
+  const [polled, setPolled] = createSignal(
+    "initial" in options ? (options.initial as T) : untrack(fn),
+    options
+  );
+  const update = () => setPolled(fn);
+  if (typeof timeout === "number") setTimer(update, timeout, setInterval);
+  else createTimer(update, timeout, setInterval);
   return polled;
-};
+}
 
 /**
  * Creates a counter which increments periodically.
@@ -157,6 +124,9 @@ export const createPolled = <T>(
  * the time between increments in ms.
  * @returns An {@link Accessor} containing the current count.
  */
-export const createIntervalCounter = (timeout: number | Accessor<number>): Accessor<number> => {
-  return createPolled(prev => (prev === undefined ? 0 : prev + 1), timeout);
+export const createIntervalCounter = (
+  timeout: number | Accessor<number | false>,
+  options: SignalOptions<number>
+): Accessor<number> => {
+  return createPolled(prev => (prev === undefined ? 0 : prev + 1), timeout, options);
 };

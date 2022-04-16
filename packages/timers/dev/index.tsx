@@ -1,14 +1,14 @@
 import { Component, createSignal, createEffect } from "solid-js";
 import { render } from "solid-js/web";
 import "uno.css";
-import { createInterval, createTimeout } from "../src";
+import { createTimer } from "../src";
 
-const Counter: Component<{ timer: typeof createInterval }> = props => {
+const Counter: Component<{ timer: typeof setInterval | typeof setTimeout }> = props => {
   const [key, reset] = createSignal(undefined, { equals: false });
   const [delay, setDelay] = createSignal(1000);
   const [count, setCount] = createSignal(0);
   const increment = () => setCount(count() + 1);
-  createEffect(() => (key(), (setCount(0), props.timer(increment, delay))));
+  createEffect(() => (key(), (setCount(0), createTimer(increment, delay, props.timer))));
   return (
     <div class="wrapper-v">
       <h4>{props.timer.name}</h4>
@@ -32,8 +32,8 @@ const Counter: Component<{ timer: typeof createInterval }> = props => {
 const App: Component = () => {
   return (
     <div class="p-24 box-border w-full min-h-screen flex flex-col justify-center items-center space-y-4 bg-gray-800 text-white">
-      <Counter timer={createTimeout} />
-      <Counter timer={createInterval} />
+      <Counter timer={setTimeout} />
+      <Counter timer={setInterval} />
     </div>
   );
 };
